@@ -283,12 +283,7 @@ const GAUGES = [
 const CORS_PROXY = "https://corsproxy.io/?";
 
 // User-added gauges live in localStorage, merged with GAUGES at render time.
-const LS = {
-  cat: "rivers.catalog",
-  catTime: "rivers.catalog.time",
-  user: "rivers.userGauges",
-};
-const CATALOG_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+const LS = { user: "rivers.userGauges" };
 
 function loadUserGauges() {
   try {
@@ -396,29 +391,11 @@ async function fetchNwpsForecast(nwsli) {
 }
 
 async function loadCatalog() {
-  const cached = localStorage.getItem(LS.cat);
-  const cachedTime = parseInt(localStorage.getItem(LS.catTime) || "0", 10);
-  if (cached && Date.now() - cachedTime < CATALOG_TTL_MS) {
-    try {
-      const v = JSON.parse(cached);
-      if (Array.isArray(v) && v.length) return v;
-    } catch {}
-  }
-  // Large response (~13 MB raw); strip to {lid, name, state} (~500 KB) before caching.
-  const j = await fetchJson("https://api.water.noaa.gov/nwps/v1/gauges");
-  const raw = j?.gauges ?? [];
-  const stripped = [];
-  for (const g of raw) {
-    if (!g.lid || !g.name) continue;
-    stripped.push({ lid: g.lid, name: g.name, state: g.state?.abbreviation || "" });
-  }
-  try {
-    localStorage.setItem(LS.cat, JSON.stringify(stripped));
-    localStorage.setItem(LS.catTime, Date.now().toString());
-  } catch (e) {
-    console.warn("could not cache catalog", e);
-  }
-  return stripped;
+  // Static catalog shipped with the repo. Refresh with update-gauges.ps1.
+  // NOAA's live /v1/gauges endpoint is too slow/flaky to call from the browser.
+  const r = await fetch("./gauges.json");
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
 }
 
 async function lookupUsgsId(lid) {
@@ -721,7 +698,7 @@ async function openAddPanel() {
   addInput.value = "";
   addResults.innerHTML = "";
   addToggleBtn.textContent = "Cancel";
-  setAddStatus("Loading gauge catalog (large download, first time only)…");
+  setAddStatus("Loading gauge catalog…");
   try {
     const cat = await ensureCatalog();
     setAddStatus(`Type to search ${cat.length.toLocaleString()} gauges`);
