@@ -147,6 +147,87 @@
     font-size: 14px;
   }
   .error-banner { color: var(--warn); }
+
+  .add-gauge-bar { margin-bottom: 14px; }
+  .add-toggle {
+    -webkit-appearance: none; appearance: none;
+    background: var(--card);
+    color: var(--accent);
+    border: 1px solid var(--accent);
+    border-radius: 8px;
+    padding: 8px 14px;
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    min-height: 36px;
+    width: 100%;
+  }
+  .add-toggle:active { opacity: 0.7; }
+  .add-panel {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 12px;
+    margin-top: 8px;
+  }
+  .add-panel input[type="search"] {
+    -webkit-appearance: none; appearance: none;
+    width: 100%;
+    padding: 10px;
+    font-size: 14px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 8px;
+  }
+  .add-panel input[type="search"]:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .add-status {
+    font-size: 12px;
+    color: var(--muted);
+    margin-bottom: 6px;
+    min-height: 16px;
+  }
+  .add-status.warn { color: var(--warn); }
+  .add-results {
+    max-height: 320px;
+    overflow-y: auto;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .add-results:empty { display: none; }
+  .gauge-result {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .gauge-result:last-child { border-bottom: none; }
+  .gauge-result:active { background: #f0f0f0; }
+  .gauge-result.already { opacity: 0.5; cursor: not-allowed; }
+  .gauge-result .gname { font-size: 14px; font-weight: 500; color: var(--text); }
+  .gauge-result .gmeta { font-size: 11px; color: var(--muted); margin-top: 2px; }
+  .summary-card { position: relative; }
+  .summary-card .remove-btn {
+    -webkit-appearance: none; appearance: none;
+    position: absolute;
+    top: 8px; right: 8px;
+    background: transparent;
+    color: var(--muted);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    width: 26px; height: 26px;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0;
+  }
+  .summary-card .remove-btn:active { opacity: 0.5; }
+  @media (min-width: 700px) {
+    .add-toggle { width: auto; min-width: 180px; }
+  }
+
   footer {
     margin-top: 18px;
     text-align: center;
@@ -165,6 +246,15 @@
     </div>
     <button class="refresh" id="refreshBtn" type="button">Refresh</button>
   </header>
+
+  <div class="add-gauge-bar">
+    <button class="add-toggle" id="addToggleBtn" type="button">+ Add gauge</button>
+    <div class="add-panel" id="addPanel" hidden>
+      <input type="search" id="addInput" placeholder="Search river or gauge name…" autocomplete="off" autocapitalize="off" spellcheck="false">
+      <div class="add-status" id="addStatus"></div>
+      <div class="add-results" id="addResults"></div>
+    </div>
+  </div>
 
   <div id="summary" class="summary"></div>
   <div id="charts"></div>
@@ -191,6 +281,37 @@ const GAUGES = [
 // will degrade gracefully (forecast missing, observed still works for USGS
 // because USGS supports CORS directly).
 const CORS_PROXY = "https://corsproxy.io/?";
+
+// User-added gauges live in localStorage, merged with GAUGES at render time.
+const LS = {
+  cat: "rivers.catalog",
+  catTime: "rivers.catalog.time",
+  user: "rivers.userGauges",
+};
+const CATALOG_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+function loadUserGauges() {
+  try {
+    const v = JSON.parse(localStorage.getItem(LS.user));
+    return Array.isArray(v) ? v : [];
+  } catch { return []; }
+}
+
+function saveUserGauges(list) {
+  try { localStorage.setItem(LS.user, JSON.stringify(list)); }
+  catch (e) { console.warn("saveUserGauges failed", e); }
+}
+
+function activeGauges() {
+  const user = loadUserGauges().map(g => ({ ...g, custom: true }));
+  return [...GAUGES, ...user];
+}
+
+function escapeHtml(s) {
+  return String(s == null ? "" : s).replace(/[&<>"']/g, c => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
+  }[c]));
+}
 
 // -------------------------------------------------------- fetch helpers
 
@@ -274,6 +395,50 @@ async function fetchNwpsForecast(nwsli) {
   return { flow, stage, note };
 }
 
+async function loadCatalog() {
+  const cached = localStorage.getItem(LS.cat);
+  const cachedTime = parseInt(localStorage.getItem(LS.catTime) || "0", 10);
+  if (cached && Date.now() - cachedTime < CATALOG_TTL_MS) {
+    try {
+      const v = JSON.parse(cached);
+      if (Array.isArray(v) && v.length) return v;
+    } catch {}
+  }
+  // Large response (~13 MB raw); strip to {lid, name, state} (~500 KB) before caching.
+  const j = await fetchJson("https://api.water.noaa.gov/nwps/v1/gauges");
+  const raw = j?.gauges ?? [];
+  const stripped = [];
+  for (const g of raw) {
+    if (!g.lid || !g.name) continue;
+    stripped.push({ lid: g.lid, name: g.name, state: g.state?.abbreviation || "" });
+  }
+  try {
+    localStorage.setItem(LS.cat, JSON.stringify(stripped));
+    localStorage.setItem(LS.catTime, Date.now().toString());
+  } catch (e) {
+    console.warn("could not cache catalog", e);
+  }
+  return stripped;
+}
+
+async function lookupUsgsId(lid) {
+  const j = await fetchJson(`https://api.water.noaa.gov/nwps/v1/gauges/${lid}`);
+  return j?.usgsId || null;
+}
+
+function searchCatalog(catalog, query, limit = 25) {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2) return [];
+  const out = [];
+  for (const g of catalog) {
+    if (g.name.toLowerCase().includes(q)) {
+      out.push(g);
+      if (out.length >= limit) break;
+    }
+  }
+  return out;
+}
+
 async function collectGauge(g) {
   const out = { gauge: g, obs: null, fcstFlow: null, fcstStage: null, note: "", errors: [] };
   const [obsRes, fcstRes] = await Promise.allSettled([
@@ -337,12 +502,15 @@ function renderSummary(allData) {
     const s = summarize(gd);
     const card = document.createElement("div");
     card.className = "summary-card";
-    let html = `<div class="name">${gd.gauge.name}</div>`;
+    let html = `<div class="name">${escapeHtml(gd.gauge.name)}</div>`;
     html += `<div class="row"><span>Latest</span><b>${fmtCfs(s.latestVal)}</b></div>`;
     html += `<div class="row"><span>Reading time</span><b>${s.latestTime ? fmtTime(s.latestTime) : "—"}</b></div>`;
     html += `<div class="row"><span>72-hr peak</span><b>${s.peakStr}</b></div>`;
-    if (gd.note) html += `<div class="note">${gd.note}</div>`;
-    if (gd.errors.length) html += `<div class="err">⚠ ${gd.errors.join("; ")}</div>`;
+    if (gd.note) html += `<div class="note">${escapeHtml(gd.note)}</div>`;
+    if (gd.errors.length) html += `<div class="err">⚠ ${escapeHtml(gd.errors.join("; "))}</div>`;
+    if (gd.gauge.custom) {
+      html += `<button class="remove-btn" type="button" data-nwsli="${escapeHtml(gd.gauge.nwsli)}" title="Remove gauge" aria-label="Remove gauge">×</button>`;
+    }
     card.innerHTML = html;
     root.appendChild(card);
   }
@@ -465,10 +633,11 @@ async function loadAll() {
   try {
     // collectGauge already swallows errors per-gauge into the result object,
     // so this should never throw — but allSettled belt-and-suspenders.
-    const settled = await Promise.allSettled(GAUGES.map(collectGauge));
+    const gauges = activeGauges();
+    const settled = await Promise.allSettled(gauges.map(collectGauge));
     const allData = settled.map((s, i) => {
       if (s.status === "fulfilled") return s.value;
-      return { gauge: GAUGES[i], obs: null, fcstFlow: null, fcstStage: null,
+      return { gauge: gauges[i], obs: null, fcstFlow: null, fcstStage: null,
                note: "", errors: ["Unexpected: " + (s.reason?.message ?? s.reason)] };
     });
 
@@ -500,6 +669,129 @@ async function loadAll() {
 }
 
 refreshBtn.addEventListener("click", loadAll);
+
+// -------------------------------------------------------- add-gauge UI
+
+const addToggleBtn = document.getElementById("addToggleBtn");
+const addPanel = document.getElementById("addPanel");
+const addInput = document.getElementById("addInput");
+const addStatus = document.getElementById("addStatus");
+const addResults = document.getElementById("addResults");
+
+let _catalogPromise = null;
+function ensureCatalog() {
+  if (!_catalogPromise) {
+    _catalogPromise = loadCatalog().catch(e => { _catalogPromise = null; throw e; });
+  }
+  return _catalogPromise;
+}
+
+function setAddStatus(msg, warn) {
+  addStatus.textContent = msg || "";
+  addStatus.className = "add-status" + (warn ? " warn" : "");
+}
+
+function takenLids() {
+  const set = new Set(GAUGES.map(g => g.nwsli));
+  for (const g of loadUserGauges()) set.add(g.nwsli);
+  return set;
+}
+
+function renderResults(matches) {
+  if (matches.length === 0) {
+    addResults.innerHTML = '<div class="gauge-result" style="cursor:default;color:var(--muted)">No matches</div>';
+    return;
+  }
+  const taken = takenLids();
+  const html = matches.map(m => {
+    const already = taken.has(m.lid);
+    const cls = "gauge-result" + (already ? " already" : "");
+    const metaParts = [m.state, m.lid].filter(Boolean);
+    if (already) metaParts.push("already added");
+    return `<div class="${cls}" data-lid="${escapeHtml(m.lid)}" data-name="${escapeHtml(m.name)}">
+      <div class="gname">${escapeHtml(m.name)}</div>
+      <div class="gmeta">${escapeHtml(metaParts.join(" · "))}</div>
+    </div>`;
+  }).join("");
+  addResults.innerHTML = html;
+}
+
+async function openAddPanel() {
+  addPanel.hidden = false;
+  addInput.value = "";
+  addResults.innerHTML = "";
+  addToggleBtn.textContent = "Cancel";
+  setAddStatus("Loading gauge catalog (large download, first time only)…");
+  try {
+    const cat = await ensureCatalog();
+    setAddStatus(`Type to search ${cat.length.toLocaleString()} gauges`);
+    addInput.focus();
+  } catch (e) {
+    setAddStatus("Failed to load catalog: " + e.message, true);
+  }
+}
+
+function closeAddPanel() {
+  addPanel.hidden = true;
+  addInput.value = "";
+  addResults.innerHTML = "";
+  setAddStatus("");
+  addToggleBtn.textContent = "+ Add gauge";
+}
+
+let _searchTimer = null;
+addInput.addEventListener("input", () => {
+  clearTimeout(_searchTimer);
+  _searchTimer = setTimeout(async () => {
+    const q = addInput.value;
+    if (q.trim().length < 2) {
+      addResults.innerHTML = "";
+      return;
+    }
+    try {
+      const cat = await ensureCatalog();
+      renderResults(searchCatalog(cat, q));
+    } catch (e) {
+      setAddStatus("Search failed: " + e.message, true);
+    }
+  }, 220);
+});
+
+addResults.addEventListener("click", async (ev) => {
+  const row = ev.target.closest(".gauge-result[data-lid]");
+  if (!row || row.classList.contains("already")) return;
+  const lid = row.dataset.lid;
+  const name = row.dataset.name;
+  setAddStatus(`Looking up USGS link for ${name}…`);
+  try {
+    const usgs = await lookupUsgsId(lid);
+    if (!usgs) {
+      setAddStatus(`${name} has no linked USGS site — flow data not available`, true);
+      return;
+    }
+    const list = loadUserGauges();
+    list.push({ name, usgs, nwsli: lid });
+    saveUserGauges(list);
+    closeAddPanel();
+    await loadAll();
+  } catch (e) {
+    setAddStatus("Lookup failed: " + e.message, true);
+  }
+});
+
+addToggleBtn.addEventListener("click", () => {
+  if (addPanel.hidden) openAddPanel();
+  else closeAddPanel();
+});
+
+document.getElementById("summary").addEventListener("click", async (ev) => {
+  const btn = ev.target.closest(".remove-btn[data-nwsli]");
+  if (!btn) return;
+  const lid = btn.dataset.nwsli;
+  const list = loadUserGauges().filter(g => g.nwsli !== lid);
+  saveUserGauges(list);
+  await loadAll();
+});
 
 // Kick off on load
 if (document.readyState === "loading") {
