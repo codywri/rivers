@@ -398,11 +398,13 @@ function renderChart(gd, container) {
       gridcolor: "#eee", showgrid: true, rangemode: "tozero",
       tickformat: ",d", fixedrange: false,
     },
-    yaxis2: hasStageOnly ? {
+  };
+  if (hasStageOnly) {
+    layout.yaxis2 = {
       title: { text: "ft", font: { size: 11 } },
       overlaying: "y", side: "right", showgrid: false,
-    } : undefined,
-  };
+    };
+  }
 
   const config = {
     responsive: true, displaylogo: false,
